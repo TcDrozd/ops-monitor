@@ -86,7 +86,7 @@ class StateStore:
         latency_ms: int,
         status_code: int | None = None,
         error: str | None = None,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         with self._lock:
             cs = self._checks[check_id]
             prev_ok = cs.ok
@@ -135,9 +135,15 @@ class StateStore:
             if self._persistence:
                 self._persistence.upsert_check_state(cs.to_dict())
 
+            return event
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {k: v.to_dict() for k, v in self._checks.items()}
+
+    def check_state(self, check_id: str) -> dict[str, Any]:
+        with self._lock:
+            return self._checks[check_id].to_dict()
 
     def summary(self) -> dict[str, Any]:
         snap = self.snapshot()
