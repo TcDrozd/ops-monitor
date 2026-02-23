@@ -2,13 +2,9 @@ from __future__ import annotations
 
 import socket
 import time
-from dataclasses import dataclass
 
-@dataclass
-class CheckResult:
-    ok: bool
-    latency_ms: int
-    error: str | None = None
+from app.checks.results import CheckResult
+
 
 def run_tcp(host: str, port: int, timeout_s: int) -> CheckResult:
     start = time.perf_counter()

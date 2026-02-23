@@ -58,20 +58,7 @@ def status_checks():
 
 @app.get("/api/status/summary")
 def status_summary():
-    snap = store.snapshot()
-    total = len(snap)
-    up = sum(1 for v in snap.values() if v["ok"] is True)
-    down = sum(1 for v in snap.values() if v["ok"] is False)
-    unknown = sum(1 for v in snap.values() if v["ok"] is None)
-
-    down_list = [v for v in snap.values() if v["ok"] is False]
-    return {
-        "total": total,
-        "up": up,
-        "down": down,
-        "unknown": unknown,
-        "down_checks": down_list,
-    }
+    return store.summary()
 
 
 @app.get("/api/status/events")

@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 import requests
 
-@dataclass
-class CheckResult:
-    ok: bool
-    latency_ms: int
-    status_code: int | None = None
-    error: str | None = None
+from app.checks.results import CheckResult
+
 
 def run_http(url: str, timeout_s: int) -> CheckResult:
     start = time.perf_counter()
