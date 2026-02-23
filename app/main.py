@@ -1,9 +1,23 @@
 from fastapi import FastAPI
 
+from app.state import StateStore
+from app.runner import loop_forever
 from app.config import settings
 from app.registry import apply_defaults, load_registry
 
+import threading
+
 app = FastAPI(title="Ops Monitor")
+store = StateStore()
+
+@app.on_event("startup")
+def start_runner():
+    t = threading.Thread(
+        target=loop_forever,
+        args=(store, settings.MONITOR_INTERVAL),
+        daemon=True,
+    )
+    t.start()
 
 
 @app.get("/health")
@@ -34,3 +48,29 @@ def registry_normalized():
         "checks": apply_defaults(reg),
         "count": len(reg.checks),
     }
+
+
+@app.get("/api/status/checks")
+def status_checks():
+    return store.snapshot()
+
+@app.get("/api/status/summary")
+def status_summary():
+    snap = store.snapshot()
+    total = len(snap)
+    up = sum(1 for v in snap.values() if v["ok"] is True)
+    down = sum(1 for v in snap.values() if v["ok"] is False)
+    unknown = sum(1 for v in snap.values() if v["ok"] is None)
+
+    down_list = [v for v in snap.values() if v["ok"] is False]
+    return {
+        "total": total,
+        "up": up,
+        "down": down,
+        "unknown": unknown,
+        "down_checks": down_list,
+    }
+
+@app.get("/api/status/events")
+def status_events(limit: int = 50):
+    return store.events(limit=limit)
