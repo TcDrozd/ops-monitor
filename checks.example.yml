@@ -1,0 +1,16 @@
+defaults:
+  interval_s: 30
+  timeout_s: 3
+  retries: 1
+
+checks:
+  - id: example-http
+    type: http
+    url: "http://127.0.0.1:8000/health"
+    tags: [example]
+
+  - id: example-tcp
+    type: tcp
+    host: "127.0.0.1"
+    port: 1234
+    tags: [example]
