@@ -1,5 +1,16 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 
+from app.api_schemas import (
+    AlertTestResponse,
+    CheckStateResponse,
+    ConfigResponse,
+    HealthResponse,
+    RegistryNormalizedResponse,
+    StatusEventResponse,
+    StatusSummaryResponse,
+)
+from app.notifier import NtfyConfig, NtfyNotifier
+from app.models import Registry
 from app.state import StateStore
 from app.runner import loop_forever
 from app.config import settings
@@ -7,7 +18,14 @@ from app.registry import apply_defaults, load_registry
 
 import threading
 
-app = FastAPI(title="Ops Monitor")
+app = FastAPI(
+    title="Ops Monitor",
+    version="1.0.0",
+    description=(
+        "Service checks monitor that loads checks from checks.yml, "
+        "runs HTTP/TCP probes, and exposes current status and event history."
+    ),
+)
 store = StateStore(db_path=settings.OPSMONITOR_DB_PATH)
 
 
@@ -21,12 +39,24 @@ def start_runner():
     t.start()
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+    tags=["system"],
+    summary="Health Check",
+    description="Liveness endpoint used by probes and orchestration.",
+)
 def health():
     return {"status": "ok"}
 
 
-@app.get("/config")
+@app.get(
+    "/config",
+    response_model=ConfigResponse,
+    tags=["system"],
+    summary="Current Effective Config",
+    description="Returns non-secret runtime config values.",
+)
 def config():
     return {
         "portainer_base_url": settings.PORTAINER_BASE_URL,
@@ -35,13 +65,25 @@ def config():
     }
 
 
-@app.get("/api/registry/raw")
+@app.get(
+    "/api/registry/raw",
+    response_model=Registry,
+    tags=["registry"],
+    summary="Raw Registry",
+    description="Returns the checks registry exactly as parsed from checks.yml.",
+)
 def registry_raw():
     reg = load_registry()
     return reg.model_dump()
 
 
-@app.get("/api/registry")
+@app.get(
+    "/api/registry",
+    response_model=RegistryNormalizedResponse,
+    tags=["registry"],
+    summary="Normalized Registry",
+    description="Returns checks with defaults applied, keyed by check id.",
+)
 def registry_normalized():
     reg = load_registry()
     return {
@@ -51,16 +93,74 @@ def registry_normalized():
     }
 
 
-@app.get("/api/status/checks")
+@app.get(
+    "/api/status/checks",
+    response_model=dict[str, CheckStateResponse],
+    tags=["status"],
+    summary="Current Check States",
+    description="Latest known state per check id.",
+)
 def status_checks():
     return store.snapshot()
 
 
-@app.get("/api/status/summary")
+@app.get(
+    "/api/status/summary",
+    response_model=StatusSummaryResponse,
+    tags=["status"],
+    summary="Status Summary",
+    description="Aggregate counts and list of currently down checks.",
+)
 def status_summary():
     return store.summary()
 
 
-@app.get("/api/status/events")
-def status_events(limit: int = 50):
+@app.get(
+    "/api/status/events",
+    response_model=list[StatusEventResponse],
+    tags=["status"],
+    summary="Recent Status Events",
+    description="Recent INIT/UP/DOWN events, newest first.",
+)
+def status_events(
+    limit: int = Query(default=50, ge=1, le=500, description="Max number of events to return")
+):
     return store.events(limit=limit)
+
+
+@app.post(
+    "/api/alerts/test",
+    response_model=AlertTestResponse,
+    tags=["alerts"],
+    summary="Send Test Alert",
+    description="Sends a test ntfy notification for a specific check id.",
+)
+def alerts_test(
+    check_id: str = Query(
+        ...,
+        min_length=1,
+        description="Check id from /api/registry to use as test context",
+    )
+):
+    if not settings.NTFY_URL or not settings.NTFY_TOPIC:
+        raise HTTPException(
+            status_code=400,
+            detail="NTFY_URL and NTFY_TOPIC must be configured",
+        )
+
+    checks = apply_defaults(load_registry())
+    check = checks.get(check_id)
+    if check is None:
+        raise HTTPException(status_code=404, detail=f"Unknown check_id: {check_id}")
+
+    target = check["url"] if check["type"] == "http" else f"{check['host']}:{check['port']}"
+    title = f"[TEST] {check_id}"
+    message = (
+        "This is a test notification from ops-monitor.\n"
+        f"Check: {check_id} ({check['type']})\n"
+        f"Target: {target}"
+    )
+
+    notifier = NtfyNotifier(NtfyConfig(base_url=settings.NTFY_URL, topic=settings.NTFY_TOPIC))
+    notifier.send_down(title=title, message=message)
+    return {"ok": True, "check_id": check_id, "channel": "ntfy"}

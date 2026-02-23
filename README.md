@@ -30,4 +30,20 @@ Environment variables are loaded from `.env` via `python-dotenv` in `app/config.
 
 - `MONITOR_INTERVAL` (seconds)
 - `OPSMONITOR_DB_PATH` (SQLite file path)
-- Existing integration/env vars remain unchanged (`PORTAINER_*`, `NTFY_*`, `PROXMOX_STATS_URL`)
+- `NTFY_URL` (base ntfy URL, e.g. `http://192.168.50.XXX:80`)
+- `NTFY_TOPIC` (ntfy topic name)
+- Existing integration/env vars remain unchanged (`PORTAINER_*`, `PROXMOX_STATS_URL`)
+
+## Alerts Test Endpoint
+
+Use this endpoint to validate ntfy configuration without waiting for a real failure.
+
+```bash
+curl -X POST "http://127.0.0.1:8060/api/alerts/test?check_id=open-webui"
+```
+
+- Endpoint: `POST /api/alerts/test?check_id=...`
+- Behavior:
+  - Validates `NTFY_URL` + `NTFY_TOPIC` are configured
+  - Validates `check_id` exists in the normalized registry
+  - Sends a test notification to ntfy

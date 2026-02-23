@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
 import threading
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from app.persistence import SQLitePersistence
@@ -34,7 +34,9 @@ class StateStore:
         self._events: list[dict[str, Any]] = []
         self._max_events = max_events
         self._lock = threading.Lock()
-        self._persistence = SQLitePersistence(db_path, max_events=max_events) if db_path else None
+        self._persistence = (
+            SQLitePersistence(db_path, max_events=max_events) if db_path else None
+        )
 
         if self._persistence:
             self._load_from_db()
