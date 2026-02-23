@@ -23,6 +23,7 @@ venv/
 
 # Local overrides
 checks.local.yml
-
 checks.yml
-checks.local.yml
+
+# Local data
+data/

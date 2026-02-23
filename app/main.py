@@ -8,7 +8,8 @@ from app.registry import apply_defaults, load_registry
 import threading
 
 app = FastAPI(title="Ops Monitor")
-store = StateStore()
+store = StateStore(db_path=settings.OPSMONITOR_DB_PATH)
+
 
 @app.on_event("startup")
 def start_runner():
@@ -54,6 +55,7 @@ def registry_normalized():
 def status_checks():
     return store.snapshot()
 
+
 @app.get("/api/status/summary")
 def status_summary():
     snap = store.snapshot()
@@ -70,6 +72,7 @@ def status_summary():
         "unknown": unknown,
         "down_checks": down_list,
     }
+
 
 @app.get("/api/status/events")
 def status_events(limit: int = 50):

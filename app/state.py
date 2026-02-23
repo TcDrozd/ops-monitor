@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
+import threading
 from typing import Any
+
+from app.persistence import SQLitePersistence
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
 
 @dataclass
 class CheckState:
@@ -22,14 +27,35 @@ class CheckState:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+
 class StateStore:
-    def __init__(self) -> None:
+    def __init__(self, db_path: str | None = None, max_events: int = 500) -> None:
         self._checks: dict[str, CheckState] = {}
         self._events: list[dict[str, Any]] = []
+        self._max_events = max_events
+        self._lock = threading.Lock()
+        self._persistence = SQLitePersistence(db_path, max_events=max_events) if db_path else None
+
+        if self._persistence:
+            self._load_from_db()
+
+    def _load_from_db(self) -> None:
+        assert self._persistence is not None
+
+        persisted = self._persistence.load_all_check_states()
+        self._checks = {
+            check_id: CheckState(**state_dict)
+            for check_id, state_dict in persisted.items()
+        }
+        self._events = self._persistence.load_recent_events(self._max_events)
 
     def ensure_check(self, check_id: str, check_type: str) -> None:
-        if check_id not in self._checks:
-            self._checks[check_id] = CheckState(id=check_id, type=check_type)
+        with self._lock:
+            if check_id not in self._checks:
+                cs = CheckState(id=check_id, type=check_type)
+                self._checks[check_id] = cs
+                if self._persistence:
+                    self._persistence.upsert_check_state(cs.to_dict())
 
     def update(
         self,
@@ -39,47 +65,58 @@ class StateStore:
         status_code: int | None = None,
         error: str | None = None,
     ) -> None:
-        cs = self._checks[check_id]
-        prev_ok = cs.ok
+        with self._lock:
+            cs = self._checks[check_id]
+            prev_ok = cs.ok
 
-        cs.ok = ok
-        cs.last_run = now_iso()
-        cs.latency_ms = latency_ms
-        cs.status_code = status_code
-        cs.error = error
+            cs.ok = ok
+            cs.last_run = now_iso()
+            cs.latency_ms = latency_ms
+            cs.status_code = status_code
+            cs.error = error
 
-        if ok:
-            cs.last_ok = cs.last_run
+            if ok:
+                cs.last_ok = cs.last_run
 
-        if prev_ok is None:
-            cs.last_change = cs.last_run
-            self._events.append({
-                "ts": cs.last_run,
-                "id": check_id,
-                "event": "INIT",
-                "ok": ok,
-                "latency_ms": latency_ms,
-                "status_code": status_code,
-                "error": error,
-            })
-        elif prev_ok != ok:
-            cs.last_change = cs.last_run
-            self._events.append({
-                "ts": cs.last_run,
-                "id": check_id,
-                "event": "UP" if ok else "DOWN",
-                "ok": ok,
-                "latency_ms": latency_ms,
-                "status_code": status_code,
-                "error": error,
-            })
+            event: dict[str, Any] | None = None
+            if prev_ok is None:
+                cs.last_change = cs.last_run
+                event = {
+                    "ts": cs.last_run,
+                    "id": check_id,
+                    "event": "INIT",
+                    "ok": ok,
+                    "latency_ms": latency_ms,
+                    "status_code": status_code,
+                    "error": error,
+                }
+            elif prev_ok != ok:
+                cs.last_change = cs.last_run
+                event = {
+                    "ts": cs.last_run,
+                    "id": check_id,
+                    "event": "UP" if ok else "DOWN",
+                    "ok": ok,
+                    "latency_ms": latency_ms,
+                    "status_code": status_code,
+                    "error": error,
+                }
 
-        # keep events bounded
-        if len(self._events) > 500:
-            self._events = self._events[-500:]
+            if event is not None:
+                self._events.append(event)
+                if self._persistence:
+                    self._persistence.insert_event(event)
+
+            if len(self._events) > self._max_events:
+                self._events = self._events[-self._max_events :]
+
+            if self._persistence:
+                self._persistence.upsert_check_state(cs.to_dict())
 
     def snapshot(self) -> dict[str, Any]:
-        return {k: v.to_dict() for k, v in self._checks.items()}
+        with self._lock:
+            return {k: v.to_dict() for k, v in self._checks.items()}
 
     def events(self, limit: int = 50) -> list[dict[str, Any]]:
-        return list(reversed(self._events[-limit:]))
+        with self._lock:
+            return list(reversed(self._events[-limit:]))
