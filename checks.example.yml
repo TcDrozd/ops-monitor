@@ -4,13 +4,16 @@ defaults:
   retries: 1
 
 checks:
-  - id: example-http
+  - id: ollama
     type: http
-    url: "http://127.0.0.1:8000/health"
-    tags: [example]
+    url: "http://127.0.0.1:11434/api/tags"
+    timeout_s: 5
+    down_threshold: 2
+    tags: [ai, api]
 
-  - id: example-tcp
+  - id: open-webui
     type: tcp
     host: "127.0.0.1"
-    port: 1234
-    tags: [example]
+    port: 3000
+    down_threshold: 2
+    tags: [ai, ui]

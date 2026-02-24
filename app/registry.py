@@ -40,6 +40,7 @@ def apply_defaults(reg: Registry) -> dict[str, dict]:
         cd["interval_s"] = cd["interval_s"] or d.interval_s
         cd["timeout_s"] = cd["timeout_s"] or d.timeout_s
         cd["retries"] = cd["retries"] or d.retries
+        cd["down_threshold"] = cd.get("down_threshold") or 1
         out[c.id] = cd
 
     return out

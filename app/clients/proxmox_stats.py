@@ -11,7 +11,7 @@ def _build_summary_url(base_url: str) -> str:
     parsed = urlparse(base_url)
     if parsed.path and parsed.path != "/":
         return base_url
-    return f"{base_url.rstrip('/')}/api/health/summary"
+    return f"{base_url.rstrip('/')}/api/metrics/health-summary"
 
 
 def get_health_summary() -> dict:

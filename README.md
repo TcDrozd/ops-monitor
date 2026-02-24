@@ -1,49 +1,138 @@
 # ops-monitor
 
-Minimal FastAPI monitor that reads checks from `checks.yml`, runs HTTP/TCP checks in a background loop, and exposes status endpoints.
+`ops-monitor` is a FastAPI control-plane service for homelab operational visibility.
 
-## Local run
+It continuously runs configured HTTP/TCP checks, stores current and recent status history, and exposes read-oriented APIs for:
+- service-level health and transitions
+- a unified operations summary for automation/agents
+- dependency reachability (including cached `proxmox-stats` health)
 
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-cp checks.example.yml checks.yml
-./run_dev.sh
+This service is intentionally lightweight: in-memory runtime state with SQLite persistence and a single background runner loop.
+
+## What It Does
+
+- Loads checks from `checks.yml`.
+- Applies defaults (`interval_s`, `timeout_s`, `retries`) per check.
+- Supports per-check `down_threshold` (consecutive failures required before DOWN).
+- Executes checks on a fixed cadence (`MONITOR_INTERVAL`).
+- Tracks per-check state (`ok`, `latency_ms`, `status_code`, timestamps, errors).
+- Emits transition events (`INIT`, `UP`, `DOWN`).
+- Persists check states and recent events to SQLite.
+- Polls `proxmox-stats` on the same cadence and caches its last payload/error.
+- Serves typed OpenAPI for all endpoints.
+
+## Runtime Model
+
+- App entrypoint: `app/main.py`
+- Background loop: `app/runner.py::loop_forever`
+- Main state store: `app/state.py::StateStore`
+- Persistence layer: `app/persistence.py::SQLitePersistence`
+- API schemas: `app/api_schemas.py`
+- Proxmox client: `app/clients/proxmox_stats.py`
+
+## Status Semantics
+
+### Down threshold (`down_threshold`)
+
+Each check can set `down_threshold` (default: `1`):
+- `1`: current behavior, first failing run can mark the check DOWN.
+- `2+`: check must fail consecutively `N` times before transitioning to DOWN.
+
+Recovery is immediate: first successful run resets `fail_count` to `0` and transitions to UP.
+
+Example `checks.yml` entries:
+
+```yaml
+- id: ollama
+  type: http
+  url: http://127.0.0.1:11434/api/tags
+  timeout_s: 5
+  down_threshold: 2
+
+- id: open-webui
+  type: tcp
+  host: 127.0.0.1
+  port: 3000
+  down_threshold: 2
 ```
 
-Default dev server: `http://0.0.0.0:8060` (uvicorn `app.main:app`).
+### `/health`
+Process liveness only (`{"status":"ok"}`). It does not include dependency checks.
 
-## SQLite persistence
+### `/api/ops/summary` overall status rules
+Overall is computed as:
+1. `crit` if any configured core check is down.
+2. `warn` if proxmox is `warn` or any non-core check is down.
+3. otherwise `ok`.
 
-Check state and recent status events are persisted to SQLite.
+Core checks come from `OPS_CORE_CHECK_IDS` (comma-separated). If unset, all checks are treated as non-core.
 
-- Env var: `OPSMONITOR_DB_PATH`
-- Local dev example: `OPSMONITOR_DB_PATH=./data/ops-monitor.sqlite3`
-- LXC/systemd target path: `/opt/ops-monitor/data/ops-monitor.sqlite3`
+### Proxmox cache behavior
+- `proxmox-stats` is polled in the background (not during request handling).
+- Cache contains: `last_payload`, `last_fetch_ts`, `last_error`.
+- Failed polls do not discard the last successful payload.
+- API endpoints degrade to `unknown`/`unavailable` instead of throwing.
 
-`StateStore` hydrates from the DB on startup so `/api/status/*` has the last known state before the next loop completes.
+## Configuration
 
-## Config
+Environment variables are read in `app/config.py`.
 
-Environment variables are loaded from `.env` via `python-dotenv` in `app/config.py`.
+### Main variables
+- `MONITOR_INTERVAL` (default: `30`)
+- `OPSMONITOR_DB_PATH` (default: `/opt/ops-monitor/data/ops-monitor.sqlite3`)
+- `NTFY_URL`
+- `NTFY_TOPIC`
+- `PORTAINER_BASE_URL`
+- `PORTAINER_API_KEY`
 
-- `MONITOR_INTERVAL` (seconds)
-- `OPSMONITOR_DB_PATH` (SQLite file path)
-- `NTFY_URL` (base ntfy URL, e.g. `http://192.168.50.XXX:80`)
-- `NTFY_TOPIC` (ntfy topic name)
-- Existing integration/env vars remain unchanged (`PORTAINER_*`, `PROXMOX_STATS_URL`)
+### Proxmox/Ops variables
+- `PROXMOX_STATS_URL` (legacy support)
+- `PROXMOX_STATS_BASE_URL` (preferred)
+- `PROXMOX_STATS_TIMEOUT_SECONDS` (default: `2.5`)
+- `OPS_CORE_CHECK_IDS` (comma-separated check IDs)
+- `OLLAMA_BASE_URL` (default: `http://192.168.50.201:11434`)
+- `OLLAMA_MODEL` (default: `llama3.1:8b`)
+- `OLLAMA_TIMEOUT_S` (default: `30`)
 
-## Alerts Test Endpoint
+If `PROXMOX_STATS_BASE_URL` is not set, ops-monitor falls back to `PROXMOX_STATS_URL`.
 
-Use this endpoint to validate ntfy configuration without waiting for a real failure.
+## Data Persistence
+
+SQLite tables:
+- `check_states`: latest state per check id
+- `events`: append-only transition history, bounded to max events
+
+On startup, state is hydrated from SQLite so status endpoints can return last known values before the next loop iteration.
+
+## API Reference
+
+Endpoint-by-endpoint examples and expected payloads are documented in:
+
+- [`endpoints.md`](./endpoints.md)
+
+## OpenAPI
+
+OpenAPI schema is generated by FastAPI from typed response models in `app/api_schemas.py`.
+
+Key endpoint groups:
+- system: `/health`, `/config`
+- registry: `/api/registry/raw`, `/api/registry`
+- status: `/api/status/checks`, `/api/status/summary`, `/api/status/events`
+- ops: `/api/ops/summary`, `/api/ops/health`
+- reports: `/api/reports/generate`
+- alerts: `/api/alerts/test`
+
+## Generate Human Report
+
+Generate a structured report from internal ops-monitor facts (ops summary, status summary, recent events, proxmox cached payload) via Ollama JSON output and stable markdown rendering:
 
 ```bash
-curl -X POST "http://127.0.0.1:8060/api/alerts/test?check_id=open-webui"
+curl -sS -X POST http://localhost:8060/api/reports/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"range_minutes":1440}' | jq
 ```
 
-- Endpoint: `POST /api/alerts/test?check_id=...`
-- Behavior:
-  - Validates `NTFY_URL` + `NTFY_TOPIC` are configured
-  - Validates `check_id` exists in the normalized registry
-  - Sends a test notification to ntfy
+Response behavior:
+- Returns `200` with `ok: true` when Ollama responds, even if JSON parsing fails.
+- Includes `report_text` (raw model output), optional `report_json` (validated), optional `parse_error`, and optional `markdown`.
+- Returns `502` only when Ollama itself is unreachable/errors.

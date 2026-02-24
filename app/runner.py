@@ -2,15 +2,24 @@ from __future__ import annotations
 
 import time
 
-from app.clients.proxmox_stats import get_health_summary
 from app.checks.http_check import run_http
-from app.checks.tcp_check import run_tcp
 from app.checks.results import CheckResult
+from app.checks.tcp_check import run_tcp
+from app.clients.proxmox_stats import get_health_summary
 from app.config import settings
 from app.formatting import format_transition
 from app.notifier import NtfyConfig, NtfyNotifier
 from app.registry import apply_defaults, load_registry
 from app.state import StateStore
+
+
+def _connect_timeout_override(check_id: str, check: dict) -> float | None:
+    explicit = check.get("connect_timeout_override")
+    if explicit is not None:
+        return float(explicit)
+    if check_id in {"ollama", "open-webui"}:
+        return 9.0
+    return None
 
 
 def _notify_transition(
@@ -48,6 +57,7 @@ def _update_store_from_result(
         latency_ms=res.latency_ms,
         status_code=res.status_code,
         error=res.error,
+        down_threshold=int(check.get("down_threshold", 1)),
     )
     _notify_transition(notifier, event, check, store.check_state(check_id))
 
@@ -55,21 +65,34 @@ def _update_store_from_result(
 def build_notifier() -> NtfyNotifier | None:
     if not settings.NTFY_URL or not settings.NTFY_TOPIC:
         return None
-    return NtfyNotifier(NtfyConfig(base_url=settings.NTFY_URL, topic=settings.NTFY_TOPIC))
+    return NtfyNotifier(
+        NtfyConfig(base_url=settings.NTFY_URL, topic=settings.NTFY_TOPIC)
+    )
 
 
 def run_once(store: StateStore, notifier: NtfyNotifier | None = None) -> None:
     reg = load_registry()
     checks = apply_defaults(reg)
+    active_ids = set(checks.keys())
+    store.prune(active_ids)
 
     for check_id, c in checks.items():
-        store.ensure_check(check_id, c["type"])
+        store.ensure_check(
+            check_id,
+            c["type"],
+            down_threshold=int(c.get("down_threshold", 1)),
+        )
 
     for check_id, c in checks.items():
         timeout_s = int(c["timeout_s"])
+        connect_timeout_s = _connect_timeout_override(check_id, c)
 
         if c["type"] == "http":
-            res = run_http(c["url"], timeout_s=timeout_s)
+            res = run_http(
+                c["url"],
+                timeout_s=timeout_s,
+                connect_timeout_s=connect_timeout_s,
+            )
             _update_store_from_result(store, check_id, c, res, notifier)
         elif c["type"] == "tcp":
             res = run_tcp(c["host"], c["port"], timeout_s=timeout_s)

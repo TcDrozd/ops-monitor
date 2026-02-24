@@ -11,9 +11,23 @@ class StateStorePersistenceTests(unittest.TestCase):
             db_path = str(Path(td) / "ops-monitor.sqlite3")
 
             store1 = StateStore(db_path=db_path, max_events=500)
-            store1.ensure_check("http-google", "http")
-            store1.update("http-google", ok=False, latency_ms=12, status_code=503, error="boom")
-            store1.update("http-google", ok=True, latency_ms=10, status_code=200, error=None)
+            store1.ensure_check("http-google", "http", down_threshold=2)
+            store1.update(
+                "http-google",
+                ok=False,
+                latency_ms=12,
+                status_code=503,
+                error="boom",
+                down_threshold=2,
+            )
+            store1.update(
+                "http-google",
+                ok=True,
+                latency_ms=10,
+                status_code=200,
+                error=None,
+                down_threshold=2,
+            )
 
             store2 = StateStore(db_path=db_path, max_events=500)
             snap = store2.snapshot()
@@ -21,6 +35,8 @@ class StateStorePersistenceTests(unittest.TestCase):
             self.assertIn("http-google", snap)
             self.assertEqual(snap["http-google"]["ok"], True)
             self.assertEqual(snap["http-google"]["status_code"], 200)
+            self.assertEqual(snap["http-google"]["fail_count"], 0)
+            self.assertEqual(snap["http-google"]["down_threshold"], 2)
 
             events = store2.events(limit=10)
             self.assertEqual(len(events), 2)

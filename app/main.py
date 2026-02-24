@@ -1,3 +1,7 @@
+import logging
+import json
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Query
 
 from app.api_schemas import (
@@ -7,10 +11,15 @@ from app.api_schemas import (
     HealthResponse,
     OpsHealthResponse,
     OpsSummaryResponse,
+    ReportGenerateRequest,
+    ReportGenerateResponse,
+    ReportRangeInfo,
+    ReportSourcesInfo,
     RegistryNormalizedResponse,
     StatusEventResponse,
     StatusSummaryResponse,
 )
+from app.clients.ollama_client import OllamaClientError, generate_json_report
 from app.notifier import NtfyConfig, NtfyNotifier
 from app.models import Registry
 from app.ops_logic import (
@@ -24,8 +33,34 @@ from app.state import StateStore
 from app.runner import loop_forever
 from app.config import settings
 from app.registry import apply_defaults, load_registry
+from app.reporting import (
+    REPORT_EVENTS_LIMIT,
+    build_fallback_report_data,
+    build_facts_payload,
+    build_repair_prompt,
+    build_report_prompt,
+    parse_report_data,
+    proxmox_payload_from_cache,
+    render_report_markdown,
+    validate_report_data,
+)
 
 import threading
+
+logger = logging.getLogger(__name__)
+store = StateStore(db_path=settings.OPSMONITOR_DB_PATH)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    t = threading.Thread(
+        target=loop_forever,
+        args=(store, settings.MONITOR_INTERVAL),
+        daemon=True,
+    )
+    t.start()
+    yield
+
 
 app = FastAPI(
     title="Ops Monitor",
@@ -34,18 +69,8 @@ app = FastAPI(
         "Service checks monitor that loads checks from checks.yml, "
         "runs HTTP/TCP probes, and exposes current status and event history."
     ),
+    lifespan=lifespan,
 )
-store = StateStore(db_path=settings.OPSMONITOR_DB_PATH)
-
-
-@app.on_event("startup")
-def start_runner():
-    t = threading.Thread(
-        target=loop_forever,
-        args=(store, settings.MONITOR_INTERVAL),
-        daemon=True,
-    )
-    t.start()
 
 
 @app.get(
@@ -291,3 +316,176 @@ def alerts_test(
     notifier = NtfyNotifier(NtfyConfig(base_url=settings.NTFY_URL, topic=settings.NTFY_TOPIC))
     notifier.send_down(title=title, message=message)
     return {"ok": True, "check_id": check_id, "channel": "ntfy"}
+
+
+@app.post(
+    "/api/reports/generate",
+    response_model=ReportGenerateResponse,
+    tags=["reports"],
+    summary="Generate Human Ops Report",
+    description="Builds internal facts, asks Ollama for structured JSON, and renders stable markdown.",
+)
+def reports_generate(request: ReportGenerateRequest) -> ReportGenerateResponse:
+    generated_at = utcnow_iso()
+    ops_summary_payload = ops_summary()
+    status_summary_payload = status_summary()
+    events_payload = status_events(limit=REPORT_EVENTS_LIMIT)
+    proxmox_payload = proxmox_payload_from_cache(proxmox_cache=store.proxmox_stats_snapshot())
+
+    facts = build_facts_payload(
+        ops_summary_payload=ops_summary_payload,
+        status_summary_payload=status_summary_payload,
+        events_payload=events_payload,
+        proxmox_payload=proxmox_payload,
+        generated_at=generated_at,
+        range_minutes=request.range_minutes,
+    )
+    prompt = build_report_prompt(facts=facts)
+    report_data = None
+    markdown = None
+    parse_error = None
+    report_text = ""
+    first_pass_error: str | None = None
+
+    try:
+        ollama_payload = generate_json_report(
+            prompt,
+            base_url=settings.OLLAMA_BASE_URL,
+            model=settings.OLLAMA_MODEL,
+            timeout_s=settings.OLLAMA_TIMEOUT_S,
+            temperature=0,
+        )
+    except OllamaClientError as exc:
+        first_pass_error = str(exc)
+        logger.error("First-pass report generation failed: %s", first_pass_error)
+        retry_timeout = max(settings.OLLAMA_TIMEOUT_S * 2, 90)
+        try:
+            ollama_payload = generate_json_report(
+                prompt,
+                base_url=settings.OLLAMA_BASE_URL,
+                model=settings.OLLAMA_MODEL,
+                timeout_s=retry_timeout,
+                temperature=0,
+            )
+            logger.info("First-pass report generation retry succeeded with timeout=%ss", retry_timeout)
+        except OllamaClientError as retry_exc:
+            final_error = f"{first_pass_error}; retry failed: {retry_exc}"
+            logger.error("First-pass report retry failed: %s", retry_exc)
+            parse_error = f"model call failed: {final_error}"
+            report_data = build_fallback_report_data(error_text=final_error)
+            report_text = ""
+            sources_info = {
+                "ops_summary_included": True,
+                "status_summary_included": True,
+                "events_limit": REPORT_EVENTS_LIMIT,
+                "proxmox_included": True,
+            }
+            markdown = render_report_markdown(
+                report_data=report_data,
+                generated_at=generated_at,
+                range_minutes=request.range_minutes,
+                status_summary=status_summary_payload,
+                sources_info=sources_info,
+            )
+            return ReportGenerateResponse(
+                ok=True,
+                generated_at=generated_at,
+                inputs=facts,
+                report_text=report_text,
+                report_json=report_data,
+                parse_error=parse_error,
+                markdown=markdown,
+                range=ReportRangeInfo(
+                    range_minutes=request.range_minutes,
+                    generated_at=generated_at,
+                ),
+                sources=ReportSourcesInfo(**sources_info),
+            )
+
+    sources_info = {
+        "ops_summary_included": True,
+        "status_summary_included": True,
+        "events_limit": REPORT_EVENTS_LIMIT,
+        "proxmox_included": True,
+    }
+
+    model_output = ollama_payload.get("response")
+    if isinstance(model_output, str):
+        report_text = model_output
+    else:
+        report_text = json.dumps(ollama_payload)
+
+    first_failure_reason: str | None = None
+    try:
+        first_candidate = parse_report_data(report_text)
+        is_valid, validity_reason = validate_report_data(first_candidate)
+        if is_valid:
+            report_data = first_candidate
+            logger.info("Report normalization succeeded on first pass")
+        else:
+            first_failure_reason = f"first pass validity failed: {validity_reason}"
+            logger.warning("Report validity gate failed on first pass: %s", validity_reason)
+    except ValueError as exc:
+        first_failure_reason = f"first pass normalization failed: {exc}"
+        snippet = report_text[:280].replace("\n", "\\n")
+        logger.error("Failed to parse report JSON output: %s | snippet=%s", exc, snippet)
+
+    if report_data is None:
+        if first_failure_reason is None:
+            first_failure_reason = "first pass failed without a specific reason"
+        repair_prompt = build_repair_prompt(bad_output=report_text)
+        repair_failure_reason: str | None = None
+        try:
+            repaired_payload = generate_json_report(
+                repair_prompt,
+                base_url=settings.OLLAMA_BASE_URL,
+                model=settings.OLLAMA_MODEL,
+                timeout_s=settings.OLLAMA_TIMEOUT_S,
+                temperature=0,
+                max_tokens=700,
+            )
+            repaired_text = repaired_payload.get("response")
+            if isinstance(repaired_text, str):
+                repair_candidate = parse_report_data(repaired_text)
+                repair_valid, repair_validity_reason = validate_report_data(repair_candidate)
+                if repair_valid:
+                    report_data = repair_candidate
+                    parse_error = f"{first_failure_reason}; repaired via second pass"
+                    report_text = repaired_text
+                    logger.info("Report repair pass succeeded")
+                else:
+                    repair_failure_reason = f"repair validity failed: {repair_validity_reason}"
+            else:
+                repair_failure_reason = "repair output missing response text"
+        except (OllamaClientError, ValueError) as repair_exc:
+            repair_failure_reason = str(repair_exc)
+            logger.error("Report repair pass failed: %s", repair_exc)
+
+        if report_data is None:
+            parse_error = f"{first_failure_reason}; {repair_failure_reason}"
+            logger.warning("Report repair failed; using deterministic fallback")
+            report_data = build_fallback_report_data(error_text=parse_error)
+
+    if report_data is not None:
+        markdown = render_report_markdown(
+            report_data=report_data,
+            generated_at=generated_at,
+            range_minutes=request.range_minutes,
+            status_summary=status_summary_payload,
+            sources_info=sources_info,
+        )
+
+    return ReportGenerateResponse(
+        ok=True,
+        generated_at=generated_at,
+        inputs=facts,
+        report_text=report_text,
+        report_json=report_data,
+        parse_error=parse_error,
+        markdown=markdown,
+        range=ReportRangeInfo(
+            range_minutes=request.range_minutes,
+            generated_at=generated_at,
+        ),
+        sources=ReportSourcesInfo(**sources_info),
+    )

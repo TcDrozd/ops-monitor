@@ -16,7 +16,9 @@ class BaseCheck(BaseModel):
     tags: List[str] = Field(default_factory=list)
     interval_s: Optional[int] = None
     timeout_s: Optional[int] = None
+    connect_timeout_override: Optional[float] = None
     retries: Optional[int] = None
+    down_threshold: Optional[int] = Field(default=None, ge=1)
 
 class HttpCheck(BaseCheck):
     type: Literal["http"]

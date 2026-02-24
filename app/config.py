@@ -16,6 +16,9 @@ class Settings:
     PROXMOX_STATS_TIMEOUT_SECONDS: float = float(
         os.getenv("PROXMOX_STATS_TIMEOUT_SECONDS", "2.5")
     )
+    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://192.168.50.201:11434")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+    OLLAMA_TIMEOUT_S: int = int(os.getenv("OLLAMA_TIMEOUT_S", "30"))
     OPS_CORE_CHECK_IDS: tuple[str, ...] = tuple(
         check_id.strip()
         for check_id in os.getenv("OPS_CORE_CHECK_IDS", "").split(",")

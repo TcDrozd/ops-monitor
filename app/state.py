@@ -17,6 +17,8 @@ class CheckState:
     id: str
     type: str
     ok: bool | None = None
+    fail_count: int = 0
+    down_threshold: int = 1
     last_run: str | None = None
     last_ok: str | None = None
     last_change: str | None = None
@@ -109,13 +111,26 @@ class StateStore:
             "error": error,
         }
 
-    def ensure_check(self, check_id: str, check_type: str) -> None:
+    def ensure_check(
+        self,
+        check_id: str,
+        check_type: str,
+        down_threshold: int = 1,
+    ) -> None:
         with self._lock:
             if check_id not in self._checks:
-                cs = CheckState(id=check_id, type=check_type)
+                cs = CheckState(
+                    id=check_id,
+                    type=check_type,
+                    down_threshold=max(1, int(down_threshold)),
+                )
                 self._checks[check_id] = cs
-                if self._persistence:
-                    self._persistence.upsert_check_state(cs.to_dict())
+            else:
+                cs = self._checks[check_id]
+                cs.down_threshold = max(1, int(down_threshold))
+
+            if self._persistence:
+                self._persistence.upsert_check_state(cs.to_dict())
 
     def update(
         self,
@@ -124,39 +139,54 @@ class StateStore:
         latency_ms: int,
         status_code: int | None = None,
         error: str | None = None,
+        down_threshold: int = 1,
     ) -> dict[str, Any] | None:
         with self._lock:
             cs = self._checks[check_id]
+            is_first_observation = cs.last_run is None
             prev_ok = cs.ok
 
-            cs.ok = ok
+            cs.down_threshold = max(1, int(down_threshold))
+            if ok:
+                cs.fail_count = 0
+                effective_ok: bool | None = True
+            else:
+                cs.fail_count += 1
+                if cs.fail_count >= cs.down_threshold:
+                    effective_ok = False
+                elif prev_ok is None:
+                    effective_ok = None
+                else:
+                    effective_ok = prev_ok
+
+            cs.ok = effective_ok
             cs.last_run = now_iso()
             cs.latency_ms = latency_ms
             cs.status_code = status_code
             cs.error = error
 
-            if ok:
+            if effective_ok is True:
                 cs.last_ok = cs.last_run
 
             event: dict[str, Any] | None = None
-            if prev_ok is None:
+            if is_first_observation:
                 cs.last_change = cs.last_run
                 event = self._build_event(
                     ts=cs.last_run,
                     check_id=check_id,
                     event_name="INIT",
-                    ok=ok,
+                    ok=effective_ok,
                     latency_ms=latency_ms,
                     status_code=status_code,
                     error=error,
                 )
-            elif prev_ok != ok:
+            elif prev_ok != effective_ok:
                 cs.last_change = cs.last_run
                 event = self._build_event(
                     ts=cs.last_run,
                     check_id=check_id,
-                    event_name="UP" if ok else "DOWN",
-                    ok=ok,
+                    event_name="UP" if effective_ok else "DOWN",
+                    ok=effective_ok,
                     latency_ms=latency_ms,
                     status_code=status_code,
                     error=error,
@@ -226,3 +256,9 @@ class StateStore:
                 last_fetch_ts=self._proxmox_stats.last_fetch_ts,
                 last_error=self._proxmox_stats.last_error,
             )
+
+    def prune(self, active_ids: set[str]) -> list[str]:
+        removed = [cid for cid in self._checks.keys() if cid not in active_ids]
+        for cid in removed:
+            del self._checks[cid]
+        return removed

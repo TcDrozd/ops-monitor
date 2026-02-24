@@ -35,6 +35,8 @@ class SQLitePersistence:
                 id TEXT PRIMARY KEY,
                 type TEXT NOT NULL,
                 ok INTEGER,
+                fail_count INTEGER NOT NULL DEFAULT 0,
+                down_threshold INTEGER NOT NULL DEFAULT 1,
                 last_run TEXT,
                 last_ok TEXT,
                 last_change TEXT,
@@ -58,7 +60,24 @@ class SQLitePersistence:
             )
             """
         )
+        self._add_column_if_missing(
+            table="check_states",
+            column="fail_count",
+            ddl="INTEGER NOT NULL DEFAULT 0",
+        )
+        self._add_column_if_missing(
+            table="check_states",
+            column="down_threshold",
+            ddl="INTEGER NOT NULL DEFAULT 1",
+        )
         self._conn.commit()
+
+    def _add_column_if_missing(self, table: str, column: str, ddl: str) -> None:
+        cols = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        existing = {row["name"] for row in cols}
+        if column in existing:
+            return
+        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     @staticmethod
     def _to_db_bool(v: bool | None) -> int | None:
@@ -77,12 +96,14 @@ class SQLitePersistence:
             self._conn.execute(
                 """
                 INSERT INTO check_states (
-                    id, type, ok, last_run, last_ok, last_change,
+                    id, type, ok, fail_count, down_threshold, last_run, last_ok, last_change,
                     latency_ms, status_code, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     type=excluded.type,
                     ok=excluded.ok,
+                    fail_count=excluded.fail_count,
+                    down_threshold=excluded.down_threshold,
                     last_run=excluded.last_run,
                     last_ok=excluded.last_ok,
                     last_change=excluded.last_change,
@@ -94,6 +115,8 @@ class SQLitePersistence:
                     check_state["id"],
                     check_state["type"],
                     self._to_db_bool(check_state.get("ok")),
+                    check_state.get("fail_count", 0),
+                    check_state.get("down_threshold", 1),
                     check_state.get("last_run"),
                     check_state.get("last_ok"),
                     check_state.get("last_change"),
@@ -141,7 +164,7 @@ class SQLitePersistence:
             rows = self._conn.execute(
                 """
                 SELECT id, type, ok, last_run, last_ok, last_change,
-                       latency_ms, status_code, error
+                       fail_count, down_threshold, latency_ms, status_code, error
                 FROM check_states
                 """
             ).fetchall()
@@ -152,6 +175,10 @@ class SQLitePersistence:
                 "id": r["id"],
                 "type": r["type"],
                 "ok": self._from_db_bool(r["ok"]),
+                "fail_count": r["fail_count"] if r["fail_count"] is not None else 0,
+                "down_threshold": (
+                    r["down_threshold"] if r["down_threshold"] is not None else 1
+                ),
                 "last_run": r["last_run"],
                 "last_ok": r["last_ok"],
                 "last_change": r["last_change"],
