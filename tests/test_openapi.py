@@ -23,6 +23,7 @@ class OpenAPITests(unittest.TestCase):
         self.assertIn("/api/status/checks", paths)
         self.assertIn("/api/status/summary", paths)
         self.assertIn("/api/status/events", paths)
+        self.assertIn("/api/ops/summary", paths)
         self.assertIn("/api/registry", paths)
         self.assertIn("/api/alerts/test", paths)
 

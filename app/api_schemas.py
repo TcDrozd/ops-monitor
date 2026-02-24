@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
@@ -54,3 +54,36 @@ class AlertTestResponse(BaseModel):
     ok: bool
     check_id: str
     channel: str
+
+
+class OpsServicesSummary(BaseModel):
+    up: int
+    down: int
+    down_list: list[str]
+
+
+class OpsProxmoxSummary(BaseModel):
+    status: Literal["ok", "warn", "crit", "unknown", "unavailable"]
+    issues: list[dict[str, Any]] = Field(default_factory=list)
+    last_fetch_ts: str | None = None
+    last_error: str | None = None
+
+
+class OpsDockerSummary(BaseModel):
+    status: Literal["unknown"]
+    note: str
+
+
+class OpsRecentEvent(BaseModel):
+    ts: str
+    id: str
+    event: str
+
+
+class OpsSummaryResponse(BaseModel):
+    timestamp: str
+    overall: Literal["ok", "warn", "crit"]
+    services: OpsServicesSummary
+    proxmox: OpsProxmoxSummary
+    docker: OpsDockerSummary
+    recent_events: list[OpsRecentEvent]

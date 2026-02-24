@@ -16,6 +16,11 @@ class Settings:
     PROXMOX_STATS_TIMEOUT_SECONDS: float = float(
         os.getenv("PROXMOX_STATS_TIMEOUT_SECONDS", "2.5")
     )
+    OPS_CORE_CHECK_IDS: tuple[str, ...] = tuple(
+        check_id.strip()
+        for check_id in os.getenv("OPS_CORE_CHECK_IDS", "").split(",")
+        if check_id.strip()
+    )
     MONITOR_INTERVAL: int = int(os.getenv("MONITOR_INTERVAL", 30))
     OPSMONITOR_DB_PATH: str = os.getenv(
         "OPSMONITOR_DB_PATH", "/opt/ops-monitor/data/ops-monitor.sqlite3"

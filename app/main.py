@@ -5,12 +5,14 @@ from app.api_schemas import (
     CheckStateResponse,
     ConfigResponse,
     HealthResponse,
+    OpsSummaryResponse,
     RegistryNormalizedResponse,
     StatusEventResponse,
     StatusSummaryResponse,
 )
 from app.notifier import NtfyConfig, NtfyNotifier
 from app.models import Registry
+from app.ops_logic import compute_overall_status, serialize_ts, summarize_checks, utcnow_iso
 from app.state import StateStore
 from app.runner import loop_forever
 from app.config import settings
@@ -126,6 +128,64 @@ def status_events(
     limit: int = Query(default=50, ge=1, le=500, description="Max number of events to return")
 ):
     return store.events(limit=limit)
+
+
+@app.get(
+    "/api/ops/summary",
+    response_model=OpsSummaryResponse,
+    tags=["ops"],
+    summary="Unified Ops Summary",
+    description="Unified control-plane summary for checks, proxmox status, and recent events.",
+)
+def ops_summary():
+    checks = store.snapshot()
+    up, down, down_list, core_down, non_core_down = summarize_checks(
+        check_results=checks,
+        core_check_ids=set(settings.OPS_CORE_CHECK_IDS),
+    )
+
+    proxmox_cache = store.proxmox_stats_snapshot()
+    proxmox_payload = proxmox_cache.last_payload if isinstance(proxmox_cache.last_payload, dict) else {}
+    proxmox_status = proxmox_payload.get("status")
+    if proxmox_status not in {"ok", "warn", "crit", "unknown", "unavailable"}:
+        proxmox_status = "unknown"
+
+    issues = proxmox_payload.get("issues")
+    if not isinstance(issues, list):
+        issues = []
+    issues = [issue for issue in issues if isinstance(issue, dict)]
+
+    overall = compute_overall_status(
+        core_down=core_down,
+        non_core_down=non_core_down,
+        proxmox_status=proxmox_status,
+    )
+
+    recent_events = [
+        {"ts": event["ts"], "id": event["id"], "event": event["event"]}
+        for event in store.events(limit=20)
+    ]
+
+    return {
+        "timestamp": utcnow_iso(),
+        "overall": overall,
+        "services": {
+            "up": up,
+            "down": down,
+            "down_list": down_list,
+        },
+        "proxmox": {
+            "status": proxmox_status,
+            "issues": issues,
+            "last_fetch_ts": serialize_ts(proxmox_cache.last_fetch_ts),
+            "last_error": proxmox_cache.last_error,
+        },
+        "docker": {
+            "status": "unknown",
+            "note": "portainer checks not enabled",
+        },
+        "recent_events": recent_events,
+    }
 
 
 @app.post(
