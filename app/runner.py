@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 
+from app.clients.proxmox_stats import get_health_summary
 from app.checks.http_check import run_http
 from app.checks.tcp_check import run_tcp
 from app.checks.results import CheckResult
@@ -73,6 +74,10 @@ def run_once(store: StateStore, notifier: NtfyNotifier | None = None) -> None:
         elif c["type"] == "tcp":
             res = run_tcp(c["host"], c["port"], timeout_s=timeout_s)
             _update_store_from_result(store, check_id, c, res, notifier)
+
+    # Keep proxmox-stats in cache on the same cadence as monitor checks.
+    proxmox_summary = get_health_summary()
+    store.update_proxmox_stats(proxmox_summary)
 
 
 def loop_forever(store: StateStore, interval_s: int) -> None:

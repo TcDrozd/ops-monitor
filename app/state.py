@@ -28,12 +28,50 @@ class CheckState:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class ProxmoxStatsCache:
+    last_payload: dict[str, Any] | None = None
+    last_fetch_ts: datetime | None = None
+    last_error: str | None = None
+
+
+def apply_proxmox_fetch_result(
+    current: ProxmoxStatsCache,
+    fetch_result: dict[str, Any] | None,
+    fetch_ts: datetime,
+) -> ProxmoxStatsCache:
+    if not isinstance(fetch_result, dict):
+        return ProxmoxStatsCache(
+            last_payload=current.last_payload,
+            last_fetch_ts=fetch_ts,
+            last_error="invalid proxmox-stats payload",
+        )
+
+    status = fetch_result.get("status")
+    error = fetch_result.get("error")
+    failed = bool(error) or status == "unavailable"
+
+    if failed:
+        return ProxmoxStatsCache(
+            last_payload=current.last_payload,
+            last_fetch_ts=fetch_ts,
+            last_error=str(error) if error else "proxmox-stats unavailable",
+        )
+
+    return ProxmoxStatsCache(
+        last_payload=fetch_result,
+        last_fetch_ts=fetch_ts,
+        last_error=None,
+    )
+
+
 class StateStore:
     def __init__(self, db_path: str | None = None, max_events: int = 500) -> None:
         self._checks: dict[str, CheckState] = {}
         self._events: list[dict[str, Any]] = []
         self._max_events = max_events
         self._lock = threading.Lock()
+        self._proxmox_stats = ProxmoxStatsCache()
         self._persistence = (
             SQLitePersistence(db_path, max_events=max_events) if db_path else None
         )
@@ -164,3 +202,27 @@ class StateStore:
     def events(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._lock:
             return list(reversed(self._events[-limit:]))
+
+    def update_proxmox_stats(
+        self,
+        fetch_result: dict[str, Any] | None,
+        fetch_ts: datetime | None = None,
+    ) -> None:
+        ts = fetch_ts or datetime.now(timezone.utc)
+        with self._lock:
+            self._proxmox_stats = apply_proxmox_fetch_result(
+                current=self._proxmox_stats,
+                fetch_result=fetch_result,
+                fetch_ts=ts,
+            )
+
+    def proxmox_stats_snapshot(self) -> ProxmoxStatsCache:
+        with self._lock:
+            payload = None
+            if isinstance(self._proxmox_stats.last_payload, dict):
+                payload = dict(self._proxmox_stats.last_payload)
+            return ProxmoxStatsCache(
+                last_payload=payload,
+                last_fetch_ts=self._proxmox_stats.last_fetch_ts,
+                last_error=self._proxmox_stats.last_error,
+            )
