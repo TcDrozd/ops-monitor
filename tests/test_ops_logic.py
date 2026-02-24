@@ -1,6 +1,7 @@
+from datetime import datetime, timedelta, timezone
 import unittest
 
-from app.ops_logic import compute_overall_status, summarize_checks
+from app.ops_logic import compute_overall_status, is_fresh, summarize_checks
 
 
 class OpsLogicTests(unittest.TestCase):
@@ -42,6 +43,25 @@ class OpsLogicTests(unittest.TestCase):
         self.assertEqual(down_list, ["core-api", "edge-cache"])
         self.assertTrue(core_down)
         self.assertTrue(non_core_down)
+
+    def test_is_fresh(self) -> None:
+        now = datetime(2026, 2, 24, 12, 0, tzinfo=timezone.utc)
+
+        self.assertFalse(is_fresh(None, poll_seconds=45, now=now))
+        self.assertTrue(
+            is_fresh(
+                now - timedelta(seconds=80),
+                poll_seconds=45,
+                now=now,
+            )
+        )
+        self.assertFalse(
+            is_fresh(
+                now - timedelta(seconds=121),
+                poll_seconds=45,
+                now=now,
+            )
+        )
 
 
 if __name__ == "__main__":

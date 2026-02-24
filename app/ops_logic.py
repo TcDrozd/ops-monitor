@@ -49,3 +49,24 @@ def summarize_checks(
                 non_core_down = True
 
     return up, down, down_list, core_down, non_core_down
+
+
+def is_fresh(
+    last_fetch_ts: datetime | None,
+    poll_seconds: int,
+    now: datetime | None = None,
+) -> bool:
+    if last_fetch_ts is None:
+        return False
+
+    if poll_seconds <= 0:
+        poll_seconds = 60
+
+    current = now or datetime.now(timezone.utc)
+    fetch_ts = last_fetch_ts
+    if fetch_ts.tzinfo is None:
+        fetch_ts = fetch_ts.replace(tzinfo=timezone.utc)
+
+    freshness_window = max(2 * poll_seconds, 120)
+    age_seconds = (current - fetch_ts).total_seconds()
+    return age_seconds <= freshness_window

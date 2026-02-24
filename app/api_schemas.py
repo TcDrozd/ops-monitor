@@ -87,3 +87,26 @@ class OpsSummaryResponse(BaseModel):
     proxmox: OpsProxmoxSummary
     docker: OpsDockerSummary
     recent_events: list[OpsRecentEvent]
+
+
+class OpsDependencyStatus(BaseModel):
+    status: Literal["ok", "unknown", "unavailable"]
+    last_fetch_ts: str | None = None
+    last_error: str | None = None
+    note: str | None = None
+
+
+class OpsDependencyPlaceholder(BaseModel):
+    status: Literal["unknown"]
+    note: str
+
+
+class OpsDependenciesResponse(BaseModel):
+    proxmox_stats: OpsDependencyStatus
+    ntfy: OpsDependencyPlaceholder
+    portainer: OpsDependencyPlaceholder
+
+
+class OpsHealthResponse(BaseModel):
+    timestamp: str
+    dependencies: OpsDependenciesResponse

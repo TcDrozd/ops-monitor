@@ -5,6 +5,7 @@ from app.api_schemas import (
     CheckStateResponse,
     ConfigResponse,
     HealthResponse,
+    OpsHealthResponse,
     OpsSummaryResponse,
     RegistryNormalizedResponse,
     StatusEventResponse,
@@ -12,7 +13,13 @@ from app.api_schemas import (
 )
 from app.notifier import NtfyConfig, NtfyNotifier
 from app.models import Registry
-from app.ops_logic import compute_overall_status, serialize_ts, summarize_checks, utcnow_iso
+from app.ops_logic import (
+    compute_overall_status,
+    is_fresh,
+    serialize_ts,
+    summarize_checks,
+    utcnow_iso,
+)
 from app.state import StateStore
 from app.runner import loop_forever
 from app.config import settings
@@ -185,6 +192,66 @@ def ops_summary():
             "note": "portainer checks not enabled",
         },
         "recent_events": recent_events,
+    }
+
+
+@app.get(
+    "/api/ops/health",
+    response_model=OpsHealthResponse,
+    tags=["ops"],
+    summary="Control-Plane Dependency Health",
+    description="Dependency reachability from cached poll/check state only.",
+)
+def ops_health():
+    proxmox_cache = store.proxmox_stats_snapshot()
+    proxmox_last_fetch_ts = serialize_ts(proxmox_cache.last_fetch_ts)
+    proxmox_fresh = is_fresh(
+        last_fetch_ts=proxmox_cache.last_fetch_ts,
+        poll_seconds=settings.MONITOR_INTERVAL,
+    )
+
+    if proxmox_cache.last_fetch_ts is None:
+        proxmox_status = {
+            "status": "unknown",
+            "last_fetch_ts": None,
+            "last_error": proxmox_cache.last_error,
+            "note": "proxmox-stats not polled yet",
+        }
+    elif proxmox_fresh and proxmox_cache.last_error is None:
+        proxmox_status = {
+            "status": "ok",
+            "last_fetch_ts": proxmox_last_fetch_ts,
+            "last_error": None,
+            "note": None,
+        }
+    elif proxmox_fresh:
+        proxmox_status = {
+            "status": "unavailable",
+            "last_fetch_ts": proxmox_last_fetch_ts,
+            "last_error": proxmox_cache.last_error,
+            "note": None,
+        }
+    else:
+        proxmox_status = {
+            "status": "unknown",
+            "last_fetch_ts": proxmox_last_fetch_ts,
+            "last_error": proxmox_cache.last_error,
+            "note": "stale proxmox-stats poll data",
+        }
+
+    return {
+        "timestamp": utcnow_iso(),
+        "dependencies": {
+            "proxmox_stats": proxmox_status,
+            "ntfy": {
+                "status": "unknown",
+                "note": "ntfy checks not enabled",
+            },
+            "portainer": {
+                "status": "unknown",
+                "note": "portainer checks not enabled",
+            },
+        },
     }
 
 
