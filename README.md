@@ -16,7 +16,8 @@ This service is intentionally lightweight: in-memory runtime state with SQLite p
 - Applies defaults (`interval_s`, `timeout_s`, `retries`) per check.
 - Supports per-check `down_threshold` (consecutive failures required before DOWN).
 - Verifies Frigate API reachability, recording storage, recording-manager state,
-  and fresh recording segments for explicitly configured cameras.
+  and a configurable quorum of fresh recording segments across explicitly
+  configured cameras.
 - Executes checks on a fixed cadence (`MONITOR_INTERVAL`).
 - Tracks per-check state (`ok`, `latency_ms`, `status_code`, timestamps, errors).
 - Emits transition events (`INIT`, `UP`, `DOWN`).
@@ -47,14 +48,18 @@ Recovery is immediate: first successful run resets `fail_count` to `0` and trans
 
 Use one `frigate` check to retain a single state and notification stream while
 validating the full recording path. The check reads `/api/stats` and queries
-`/api/<camera>/recordings` with explicit `after` and `before` timestamps. Camera
-freshness is skipped while Frigate's reported uptime is inside
-`startup_grace_s`; API, storage, and recording-manager validation remain active.
+`/api/<camera>/recordings` for every required camera with explicit `after` and
+`before` timestamps. The check remains healthy when at least
+`min_fresh_cameras` have a segment inside the freshness window, allowing for
+normal per-camera segment gaps. Camera freshness is skipped while Frigate's
+reported uptime is inside `startup_grace_s`; API, storage, and
+recording-manager validation remain active.
 
 ```yaml
 - id: frigate
   type: frigate
   base_url: http://192.168.50.201:5010
+  min_fresh_cameras: 2
   min_recording_storage_mb: 1500000
   max_recording_age_s: 120
   startup_grace_s: 120

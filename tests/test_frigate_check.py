@@ -108,7 +108,7 @@ class FrigateCheckTests(unittest.TestCase):
             "(processes.recording.pid)",
         )
 
-    def test_stale_and_missing_cameras_are_listed(self) -> None:
+    def test_failed_quorum_lists_fresh_count_stale_and_missing_cameras(self) -> None:
         replies = [
             response(200, stats_payload()),
             response(200, [{"end_time": NOW - 180}]),
@@ -122,13 +122,38 @@ class FrigateCheckTests(unittest.TestCase):
                 "http://frigate.local:5000",
                 ["FrontNorth", "DogwoodCorner", "Driveway"],
                 timeout_s=3,
+                min_fresh_cameras=2,
                 max_recording_age_s=120,
             )
 
         self.assertFalse(result.ok)
+        self.assertIn(
+            "recording freshness quorum failed: 1/3 cameras fresh (required 2)",
+            result.error,
+        )
         self.assertIn("missing recording segments: DogwoodCorner", result.error)
         self.assertIn("stale recording segments: FrontNorth (180s old)", result.error)
-        self.assertNotIn("Driveway", result.error)
+
+    def test_met_quorum_passes_despite_stale_and_missing_cameras(self) -> None:
+        replies = [
+            response(200, stats_payload()),
+            response(200, [{"end_time": NOW - 180}]),
+            response(200, []),
+            response(200, [{"end_time": NOW - 10}]),
+        ]
+        with patch("app.checks.frigate_check.time.time", return_value=NOW), patch(
+            "app.checks.frigate_check.requests.get", side_effect=replies
+        ):
+            result = run_frigate(
+                "http://frigate.local:5000",
+                ["FrontNorth", "DogwoodCorner", "Driveway"],
+                timeout_s=3,
+                min_fresh_cameras=1,
+                max_recording_age_s=120,
+            )
+
+        self.assertTrue(result.ok)
+        self.assertIsNone(result.error)
 
     def test_startup_grace_skips_only_camera_freshness(self) -> None:
         with patch(
@@ -192,8 +217,35 @@ class FrigateCheckTests(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertEqual(result.status_code, 503)
+        self.assertIn(
+            "recording freshness quorum failed: 0/1 cameras fresh (required 1)",
+            result.error,
+        )
+        self.assertIn("recordings API failures: FrontNorth (HTTP 503)", result.error)
+
+    def test_met_quorum_passes_despite_individual_camera_api_failure(self) -> None:
+        replies = [
+            response(200, stats_payload()),
+            response(200, [{"end_time": NOW - 10}]),
+            response(503, {}),
+            response(200, [{"end_time": NOW - 20}]),
+        ]
+        with patch("app.checks.frigate_check.time.time", return_value=NOW), patch(
+            "app.checks.frigate_check.requests.get", side_effect=replies
+        ) as mock_get:
+            result = run_frigate(
+                "http://frigate.local:5000",
+                ["FrontNorth", "SideYard", "Driveway"],
+                timeout_s=3,
+                min_fresh_cameras=2,
+            )
+
+        self.assertTrue(result.ok)
+        self.assertIsNone(result.error)
         self.assertEqual(
-            result.error, "recordings API failures: FrontNorth (HTTP 503)"
+            mock_get.call_count,
+            4,
+            "all required cameras must be queried even after quorum is met",
         )
 
 

@@ -103,6 +103,7 @@ def run_once(store: StateStore, notifier: NtfyNotifier | None = None) -> None:
                 base_url=c["base_url"],
                 required_cameras=c["required_cameras"],
                 timeout_s=timeout_s,
+                min_fresh_cameras=int(c["min_fresh_cameras"]),
                 min_recording_storage_mb=float(c["min_recording_storage_mb"]),
                 max_recording_age_s=int(c["max_recording_age_s"]),
                 startup_grace_s=int(c["startup_grace_s"]),

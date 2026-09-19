@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional, List
 
-from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
+from pydantic import AnyHttpUrl, BaseModel, Field, field_validator, model_validator
 
 CheckType = Literal["http", "tcp", "frigate"]
 
@@ -39,6 +39,7 @@ class FrigateCheck(BaseCheck):
     type: Literal["frigate"]
     base_url: AnyHttpUrl
     required_cameras: List[str] = Field(..., min_length=1)
+    min_fresh_cameras: int = Field(default=1, ge=1)
     min_recording_storage_mb: float = Field(default=1_500_000, gt=0)
     max_recording_age_s: int = Field(default=120, gt=0)
     startup_grace_s: int = Field(default=120, ge=0)
@@ -52,6 +53,14 @@ class FrigateCheck(BaseCheck):
         if len(normalized) != len(set(normalized)):
             raise ValueError("required camera names must be unique")
         return normalized
+
+    @model_validator(mode="after")
+    def validate_min_fresh_cameras(self) -> "FrigateCheck":
+        if self.min_fresh_cameras > len(self.required_cameras):
+            raise ValueError(
+                "min_fresh_cameras must not exceed the number of required cameras"
+            )
+        return self
 
 
 Check = HttpCheck | TcpCheck | FrigateCheck

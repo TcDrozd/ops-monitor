@@ -42,6 +42,7 @@ def run_frigate(
     base_url: str,
     required_cameras: Sequence[str],
     timeout_s: int,
+    min_fresh_cameras: int = 1,
     min_recording_storage_mb: float = 1_500_000,
     max_recording_age_s: int = 120,
     startup_grace_s: int = 120,
@@ -150,6 +151,7 @@ def run_frigate(
     stale_cameras: list[str] = []
     camera_api_failures: list[str] = []
     camera_failure_status: int | None = None
+    fresh_camera_count = 0
 
     for camera in required_cameras:
         camera_url = f"{api_base}/api/{quote(camera, safe='')}/recordings"
@@ -194,8 +196,20 @@ def run_frigate(
             stale_cameras.append(
                 f"{camera} ({max(0, int(before - latest_end))}s old)"
             )
+        else:
+            fresh_camera_count += 1
 
-    recording_failures: list[str] = []
+    if fresh_camera_count >= min_fresh_cameras:
+        return CheckResult(
+            ok=True,
+            latency_ms=_latency_ms(start),
+            status_code=stats_response.status_code,
+        )
+
+    recording_failures = [
+        f"recording freshness quorum failed: {fresh_camera_count}/"
+        f"{len(required_cameras)} cameras fresh (required {min_fresh_cameras})"
+    ]
     if camera_api_failures:
         recording_failures.append(
             "recordings API failures: " + ", ".join(camera_api_failures)
@@ -209,16 +223,9 @@ def run_frigate(
             "stale recording segments: " + ", ".join(stale_cameras)
         )
 
-    if recording_failures:
-        return CheckResult(
-            ok=False,
-            latency_ms=_latency_ms(start),
-            status_code=camera_failure_status or stats_response.status_code,
-            error="; ".join(recording_failures),
-        )
-
     return CheckResult(
-        ok=True,
+        ok=False,
         latency_ms=_latency_ms(start),
-        status_code=stats_response.status_code,
+        status_code=camera_failure_status or stats_response.status_code,
+        error="; ".join(recording_failures),
     )
