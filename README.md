@@ -54,7 +54,7 @@ freshness is skipped while Frigate's reported uptime is inside
 ```yaml
 - id: frigate
   type: frigate
-  base_url: http://192.168.50.201:5000
+  base_url: http://192.168.50.201:5010
   min_recording_storage_mb: 1500000
   max_recording_age_s: 120
   startup_grace_s: 120
