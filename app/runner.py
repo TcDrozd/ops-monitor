@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 
+from app.checks.frigate_check import run_frigate
 from app.checks.http_check import run_http
 from app.checks.results import CheckResult
 from app.checks.tcp_check import run_tcp
@@ -96,6 +97,18 @@ def run_once(store: StateStore, notifier: NtfyNotifier | None = None) -> None:
             _update_store_from_result(store, check_id, c, res, notifier)
         elif c["type"] == "tcp":
             res = run_tcp(c["host"], c["port"], timeout_s=timeout_s)
+            _update_store_from_result(store, check_id, c, res, notifier)
+        elif c["type"] == "frigate":
+            res = run_frigate(
+                base_url=c["base_url"],
+                required_cameras=c["required_cameras"],
+                timeout_s=timeout_s,
+                min_fresh_cameras=int(c["min_fresh_cameras"]),
+                min_recording_storage_mb=float(c["min_recording_storage_mb"]),
+                max_recording_age_s=int(c["max_recording_age_s"]),
+                startup_grace_s=int(c["startup_grace_s"]),
+                connect_timeout_s=connect_timeout_s,
+            )
             _update_store_from_result(store, check_id, c, res, notifier)
 
     # Keep proxmox-stats in cache on the same cadence as monitor checks.
