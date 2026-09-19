@@ -2,7 +2,8 @@
 
 `ops-monitor` is a FastAPI control-plane service for homelab operational visibility.
 
-It continuously runs configured HTTP/TCP checks, stores current and recent status history, and exposes read-oriented APIs for:
+It continuously runs configured HTTP/TCP checks and a composite Frigate health
+check, stores current and recent status history, and exposes read-oriented APIs for:
 - service-level health and transitions
 - a unified operations summary for automation/agents
 - dependency reachability (including cached `proxmox-stats` health)
@@ -14,6 +15,8 @@ This service is intentionally lightweight: in-memory runtime state with SQLite p
 - Loads checks from `checks.yml`.
 - Applies defaults (`interval_s`, `timeout_s`, `retries`) per check.
 - Supports per-check `down_threshold` (consecutive failures required before DOWN).
+- Verifies Frigate API reachability, recording storage, recording-manager state,
+  and fresh recording segments for explicitly configured cameras.
 - Executes checks on a fixed cadence (`MONITOR_INTERVAL`).
 - Tracks per-check state (`ok`, `latency_ms`, `status_code`, timestamps, errors).
 - Emits transition events (`INIT`, `UP`, `DOWN`).
@@ -39,6 +42,32 @@ Each check can set `down_threshold` (default: `1`):
 - `2+`: check must fail consecutively `N` times before transitioning to DOWN.
 
 Recovery is immediate: first successful run resets `fail_count` to `0` and transitions to UP.
+
+### Frigate composite check
+
+Use one `frigate` check to retain a single state and notification stream while
+validating the full recording path. The check reads `/api/stats` and queries
+`/api/<camera>/recordings` with explicit `after` and `before` timestamps. Camera
+freshness is skipped while Frigate's reported uptime is inside
+`startup_grace_s`; API, storage, and recording-manager validation remain active.
+
+```yaml
+- id: frigate
+  type: frigate
+  base_url: http://192.168.50.201:5000
+  min_recording_storage_mb: 1500000
+  max_recording_age_s: 120
+  startup_grace_s: 120
+  required_cameras:
+    - FrontNorth
+    - DogwoodCorner
+    - FrontWalkway
+    - Backyard
+    - Driveway
+    - FrontYard
+    - SideYard
+  down_threshold: 2
+```
 
 Example `checks.yml` entries:
 

@@ -20,7 +20,7 @@ class ProxmoxStatsClientTests(unittest.TestCase):
 
         self.assertEqual(payload, {"status": "ok", "issues": []})
         mock_get.assert_called_once_with(
-            "http://proxmox-stats.local/api/health/summary",
+            "http://proxmox-stats.local/api/metrics/health-summary",
             timeout=2.5,
         )
 

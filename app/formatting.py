@@ -13,6 +13,8 @@ def format_transition(
     # Target
     if check["type"] == "http":
         target = check["url"]
+    elif check["type"] == "frigate":
+        target = check["base_url"]
     else:
         target = f"{check['host']}:{check['port']}"
 
